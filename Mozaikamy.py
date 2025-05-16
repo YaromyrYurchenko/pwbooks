@@ -8,67 +8,50 @@ SOURCE_FOLDER = "images_for_mozaika"
 BASE_IMAGE = "target.jpg"
 RESULT_IMAGE = "mosaic_result.jpg"
 
-def get_average_color(img):
-    array = np.array(img)
-    shape = array.shape
-    return tuple(np.mean(array.reshape(-1, shape[2]), axis=0))
+def average_color(img):
+    return tuple(np.array(img).reshape(-1, 3).mean(axis=0))
 
-def prepare_tiles(folder, size):
-    collection = []
-    print("Reading tiles...")
-    for file in os.listdir(folder):
-        if file.lower().endswith(('.jpg', '.png', '.jpeg')):
+def load_tiles(folder, size):
+    tiles = []
+    for name in os.listdir(folder):
+        if name.lower().endswith(('.jpg', '.jpeg', '.png')):
             try:
-                image = Image.open(os.path.join(folder, file)).convert("RGB")
-                resized = image.resize((size, size))
-                avg_color = get_average_color(resized)
-                collection.append((resized.copy(), avg_color))
-            except Exception as error:
-                print(f"Skipped {file}: {error}")
-    return collection
+                img = Image.open(os.path.join(folder, name)).convert("RGB").resize((size, size))
+                tiles.append((img.copy(), average_color(img)))
+            except Exception:
+                pass
+    return tiles
 
-def select_best_tile(block_avg, tiles):
-    closest = float('inf')
-    selected = None
-    for tile_img, tile_avg in tiles:
-        distance = sum((a - b) ** 2 for a, b in zip(block_avg, tile_avg))
-        if distance < closest:
-            closest = distance
-            selected = tile_img
-    return selected
+def best_match(avg, tiles):
+    return min(tiles, key=lambda t: sum((a - b) ** 2 for a, b in zip(avg, t[1])))[0]
 
-def analyze_block(px, py, img, tiles, block_size):
-    crop_area = img.crop((px, py, px + block_size, py + block_size))
-    block_avg = get_average_color(crop_area)
-    best_match = select_best_tile(block_avg, tiles)
-    return px, py, best_match
+def process_block(x, y, base, size, tiles):
+    block = base.crop((x, y, x + size, y + size))
+    avg = average_color(block)
+    return x, y, best_match(avg, tiles)
 
-def build_mosaic(base_path, tile_folder, block_size, output_file):
+def create_mosaic(base_path, tile_folder, block_size, output_path):
     base = Image.open(base_path).convert("RGB")
     w, h = base.size
     base = base.crop((0, 0, w - w % block_size, h - h % block_size))
 
-    tiles = prepare_tiles(tile_folder, block_size)
+    tiles = load_tiles(tile_folder, block_size)
     if not tiles:
-        print("No valid tile images found.")
+        print("No tiles found.")
         return
 
     result = Image.new("RGB", base.size)
-    positions = []
 
-    print("Composing mosaic...")
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(process_block, x, y, base, block_size, tiles)
+                   for y in range(0, h, block_size)
+                   for x in range(0, w, block_size)]
+        for f in futures:
+            x, y, tile = f.result()
+            result.paste(tile, (x, y))
 
-    with ThreadPoolExecutor() as workers:
-        for top in range(0, h, block_size):
-            for left in range(0, w, block_size):
-                positions.append(workers.submit(analyze_block, left, top, base, tiles, block_size))
-
-        for job in positions:
-            x, y, img = job.result()
-            result.paste(img, (x, y))
-
-    result.save(output_file)
-    print(f"Done! Mosaic saved to: {output_file}")
+    result.save(output_path)
+    print(f"Mosaic saved to {output_path}")
 
 if __name__ == "__main__":
-    build_mosaic(BASE_IMAGE, SOURCE_FOLDER, GRID_SIZE, RESULT_IMAGE)
+    create_mosaic(BASE_IMAGE, SOURCE_FOLDER, GRID_SIZE, RESULT_IMAGE)
