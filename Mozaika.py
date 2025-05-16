@@ -1,84 +1,73 @@
-import os
-import tqdm
-from PIL import Image
-import numpy as np
-from tqdm import tqdm
-import math
-from concurrent.futures import ThreadPoolExecutor
+import os  # Для работы с файловой системой (получение списка файлов и путей)
+from PIL import Image  # Работа с изображениями (открытие, изменение размера, копирование)
+import numpy as np  # Работа с массивами и вычислениями (расчет среднего цвета)
+from concurrent.futures import ThreadPoolExecutor  # Многопоточность для ускорения обработки
 
+# Размер блока (плитки), на который делится исходное изображение
+GRID_SIZE = 5
 
-TILE_SIZE = 5
-TILE_DIR = "images_for_mozaika"
-TARGET_IMAGE = "target.jpg"
-OUTPUT_IMAGE = "mosaic_output.jpg"
+# Папка с изображениями, которые будут использоваться как плитки
+SOURCE_FOLDER = "images_for_mozaika"
 
+# Исходное изображение, которое мы превращаем в мозаику
+BASE_IMAGE = "target.jpg"
 
-def average_rgb(image):
-    np_img = np.array(image)
-    w, h, d = np_img.shape
-    return tuple(np.mean(np_img.reshape(w * h, d), axis=0))
+# Имя выходного файла с готовой мозаикой
+RESULT_IMAGE = "mosaic_result.jpg"
 
+# Функция вычисляет средний цвет изображения
+def average_color(img):
+    return tuple(np.array(img).reshape(-1, 3).mean(axis=0))  # Преобразуем изображение в массив, выравниваем и считаем среднее по каналам
 
-def load_tiles(tile_dir, tile_size):
-    tile_data = []
-    print("Loading and resizing tile images...")
-    for filename in tqdm(os.listdir(tile_dir)):
-        if filename.lower().endswith((".png", ".jpg", ".jpeg")):
-            path = os.path.join(tile_dir, filename)
+# Загрузка всех плиток из папки и подготовка их среднего цвета
+def load_tiles(folder, size):
+    tiles = []  # Список для хранения кортежей (плитка, её средний цвет)
+    for name in os.listdir(folder):  # Проходимся по всем файлам в папке
+        if name.lower().endswith(('.jpg', '.jpeg', '.png')):  # Проверяем, что файл — это изображение
             try:
-                tile = Image.open(path).convert("RGB")
-                tile = tile.resize((tile_size, tile_size))
-                avg = average_rgb(tile)
-                tile_data.append((tile.copy(), avg))
-            except Exception as e:
-                print(f"Failed to load {filename}: {e}")
-    return tile_data
+                img = Image.open(os.path.join(folder, name)).convert("RGB").resize((size, size))  # Открываем, приводим к RGB и уменьшаем до размера блока
+                tiles.append((img.copy(), average_color(img)))  # Сохраняем копию изображения и его средний цвет
+            except Exception:
+                pass  # Игнорируем ошибки (например, битые изображения)
+    return tiles  # Возвращаем список подготовленных плиток
 
+# Выбор плитки, средний цвет которой ближе всего к среднему цвету блока
+def best_match(avg, tiles):
+    return min(tiles, key=lambda t: sum((a - b) ** 2 for a, b in zip(avg, t[1])))[0]  # Находим плитку с минимальной "дистанцией" по цвету
 
-def closest_tile(avg_rgb, tile_data):
-    best_dist = float("inf")
-    best_tile = None
-    for tile, tile_avg in tile_data:
-        dist = sum((a - b) ** 2 for a, b in zip(avg_rgb, tile_avg))
-        if dist < best_dist:
-            best_dist = dist
-            best_tile = tile
-    return best_tile
+# Обработка одного блока исходного изображения: находит и возвращает подходящую плитку
+def process_block(x, y, base, size, tiles):
+    block = base.crop((x, y, x + size, y + size))  # Вырезаем блок из исходного изображения
+    avg = average_color(block)  # Считаем его средний цвет
+    return x, y, best_match(avg, tiles)  # Возвращаем координаты и подходящую плитку
 
+# Основная функция для создания мозаики
+def create_mosaic(base_path, tile_folder, block_size, output_path):
+    base = Image.open(base_path).convert("RGB")  # Загружаем исходное изображение и переводим в RGB
+    w, h = base.size  # Получаем размеры изображения
+    base = base.crop((0, 0, w - w % block_size, h - h % block_size))  # Обрезаем изображение, чтобы оно делилось на блоки без остатка
 
-def process_block(x, y, target, tile_data, tile_size):
-    block = target.crop((x, y, x + tile_size, y + tile_size))
-    avg = average_rgb(block)
-    tile = closest_tile(avg, tile_data)
-    return x, y, tile
+    tiles = load_tiles(tile_folder, block_size)  # Загружаем и подготавливаем плитки
+    if not tiles:  # Если плитки не загружены (например, папка пустая или файлы некорректные)
+        print("No tiles found.")  # Сообщаем об этом
+        return  # Выходим из функции
 
+    result = Image.new("RGB", base.size)  # Создаем новое пустое изображение под мозаику
 
-def create_mosaic(target_path, tile_dir, tile_size, output_path):
-    target_img = Image.open(target_path).convert("RGB")
-    width, height = target_img.size
-    target_img = target_img.crop((0, 0, width - width % tile_size, height - height % tile_size))
-
-    tile_data = load_tiles(tile_dir, tile_size)
-    if not tile_data:
-        print("No tile images found.")
-        return
-
-    out_img = Image.new("RGB", target_img.size)
-    tasks = []
-    print("Processing image blocks...")
-
+    # Параллельно обрабатываем все блоки изображения
     with ThreadPoolExecutor() as executor:
-        for y in range(0, height, tile_size):
-            for x in range(0, width, tile_size):
-                tasks.append(executor.submit(process_block, x, y, target_img, tile_data, tile_size))
+        futures = [  # Создаем список задач на обработку блоков
+            executor.submit(process_block, x, y, base, block_size, tiles)  # Подаём координаты и изображение в поток
+            for y in range(0, h, block_size)  # По вертикали
+            for x in range(0, w, block_size)  # По горизонтали
+        ]
+        for f in futures:  # Как только блок обработан
+            x, y, tile = f.result()  # Получаем координаты и выбранную плитку
+            result.paste(tile, (x, y))  # Вставляем плитку в итоговое изображение
 
-        for future in tqdm(tasks):
-            x, y, tile = future.result()
-            out_img.paste(tile, (x, y))
+    result.save(output_path)  # Сохраняем итоговое изображение в файл
+    print(f"Mosaic saved to {output_path}")  # Уведомляем, что всё готово
 
-    out_img.save(output_path)
-    print(f"Mosaic saved to {output_path}") 
-
-
+# Запуск функции при запуске скрипта напрямую
 if __name__ == "__main__":
-    create_mosaic(TARGET_IMAGE, TILE_DIR, TILE_SIZE, OUTPUT_IMAGE)
+    create_mosaic(BASE_IMAGE, SOURCE_FOLDER, GRID_SIZE, RESULT_IMAGE)  # Стартуем процесс создания мозаики
