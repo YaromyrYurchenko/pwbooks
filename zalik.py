@@ -46,3 +46,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+#Logger – klasa implementująca wzorzec Singleton. Gwarantuje, że w programie istnieje tylko jedna instancja logera. Metoda log() służy do wypisywania komunikatów.
+#Shape – klasa abstrakcyjna (interfejs) dla figur. Zawiera abstrakcyjną metodę draw(), którą muszą zaimplementować klasy potomne.
+#Circle i Square – klasy reprezentujące konkretne figury. Implementują metodę draw(), która wypisuje nazwę figury i wywołuje logowanie przez Logger.
+#ShapeFactory – klasa implementująca wzorzec Metoda Wytwórcza (Factory Method). Na podstawie tekstu ("circle" lub "square") tworzy odpowiedni obiekt figury.
+#main() – funkcja główna programu. Pobiera od użytkownika typ figury, tworzy obiekt przez ShapeFactory i wywołuje draw(), co rysuje figurę i zapisuje log.
